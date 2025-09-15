@@ -316,7 +316,7 @@ async def main():
     args = parser.parse_args()
     
     # Get database URL
-    database_url = 'postgresql://tjv:tjv@localhost:5432/tjv'
+    database_url = 'postgresql://tjv:tjv@postgres:5432/tjv'
     
     print("🚀 Starting database data import...")
     print(f"📁 Source file: {args.file}")
