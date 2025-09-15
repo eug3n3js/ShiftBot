@@ -1,0 +1,9 @@
+selenium
+webdriver-manager
+beautifulsoup4
+python-dotenv
+requests
+sqlalchemy>=2.0.0
+asyncpg
+asyncio
+aiogram>=3.4.0
