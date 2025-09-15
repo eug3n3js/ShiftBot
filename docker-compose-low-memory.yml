@@ -1,0 +1,106 @@
+services:
+
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: tjv
+      POSTGRES_PASSWORD: tjv
+      POSTGRES_DB: tjv
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tjv"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+    - app-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  selenium-hub:
+    image: selenium/hub:4.15.0
+    container_name: selenium-hub
+    ports:
+      - "4444:4444"
+      - "4442:4442"
+      - "4443:4443"
+    environment:
+      - GRID_MAX_SESSION=2
+      - GRID_BROWSER_TIMEOUT=300
+      - GRID_TIMEOUT=300
+    networks:
+      - app-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  selenium-chrome:
+    image: selenium/node-chrome:4.15.0
+    container_name: selenium-chrome
+    shm_size: 256mb
+    depends_on:
+      - selenium-hub
+    environment:
+      - HUB_HOST=selenium-hub
+      - HUB_PORT=4444
+      - NODE_MAX_INSTANCES=1
+      - NODE_MAX_SESSION=1
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+      - SE_NODE_SESSION_TIMEOUT=600
+      - SE_NODE_SESSION_RETRY_INTERVAL=5
+      - SE_NODE_MAX_SESSION_RETRIES=3
+    volumes:
+      - /dev/shm:/dev/shm
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    networks:
+      - app-network
+
+  exchange_collection_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://tjv:tjv@postgres:5432/tjv
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SELENIUM_LOGIN=${SELENIUM_LOGIN}
+      - SELENIUM_PASSWORD=${SELENIUM_PASSWORD}
+    networks:
+      - app-network
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+
+volumes:
+  redis_data:
+  postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
