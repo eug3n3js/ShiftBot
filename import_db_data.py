@@ -8,7 +8,7 @@ import asyncpg
 import os
 import json
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any
 
@@ -31,6 +31,39 @@ class DatabaseImporter:
         if self.conn:
             await self.conn.close()
             print("🔌 Database connection closed")
+    
+    def _parse_interval_to_timedelta(self, interval_str: str) -> timedelta:
+        """Parse PostgreSQL interval string to Python timedelta"""
+        import re
+        
+        # Handle common PostgreSQL interval formats
+        # Examples: "1 day", "2 hours", "30 minutes", "1 day 2:30:45"
+        
+        if not interval_str or interval_str.lower() in ['none', 'null']:
+            return None
+            
+        # Parse days
+        days_match = re.search(r'(\d+)\s+day', interval_str, re.IGNORECASE)
+        days = int(days_match.group(1)) if days_match else 0
+        
+        # Parse time part (HH:MM:SS)
+        time_match = re.search(r'(\d+):(\d+):(\d+(?:\.\d+)?)', interval_str)
+        if time_match:
+            hours = int(time_match.group(1))
+            minutes = int(time_match.group(2))
+            seconds = float(time_match.group(3))
+        else:
+            # Parse individual time components
+            hours_match = re.search(r'(\d+)\s+hour', interval_str, re.IGNORECASE)
+            hours = int(hours_match.group(1)) if hours_match else 0
+            
+            minutes_match = re.search(r'(\d+)\s+minute', interval_str, re.IGNORECASE)
+            minutes = int(minutes_match.group(1)) if minutes_match else 0
+            
+            seconds_match = re.search(r'(\d+(?:\.\d+)?)\s+second', interval_str, re.IGNORECASE)
+            seconds = float(seconds_match.group(1)) if seconds_match else 0
+        
+        return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
     
     async def clear_database(self, confirm: bool = False):
         """Clear all data from database (use with caution!)"""
@@ -66,27 +99,38 @@ class DatabaseImporter:
         
         for user in users_data:
             try:
-                # Parse datetime fields
-                access_ends = None
-                if user.get('access_ends'):
-                    access_ends = datetime.fromisoformat(user['access_ends'].replace('Z', '+00:00'))
+                # Check if user already exists by tg_id
+                existing_user = await self.conn.fetchrow("""
+                    SELECT id FROM users WHERE tg_id = $1
+                """, user['tg_id'])
                 
-                created_at = datetime.fromisoformat(user['created_at'].replace('Z', '+00:00'))
-                
-                # Insert user
-                new_id = await self.conn.fetchval("""
-                    INSERT INTO users (tg_id, is_admin, access_ends, created_at)
-                    VALUES ($1, $2, $3, $4)
-                    RETURNING id
-                """, user['tg_id'], user['is_admin'], access_ends, created_at)
+                if existing_user:
+                    # User already exists, use existing ID
+                    new_id = existing_user['id']
+                    print(f"   ✅ User {user['tg_id']} already exists (old_id: {user['id']} -> existing_id: {new_id})")
+                else:
+                    # Parse datetime fields
+                    access_ends = None
+                    if user.get('access_ends'):
+                        access_ends = datetime.fromisoformat(user['access_ends'].replace('Z', '+00:00'))
+                    
+                    created_at = datetime.fromisoformat(user['created_at'].replace('Z', '+00:00'))
+                    
+                    # Insert new user
+                    new_id = await self.conn.fetchval("""
+                        INSERT INTO users (tg_id, is_admin, access_ends, created_at)
+                        VALUES ($1, $2, $3, $4)
+                        RETURNING id
+                    """, user['tg_id'], user['is_admin'], access_ends, created_at)
+                    
+                    print(f"   ✅ User {user['tg_id']} imported (old_id: {user['id']} -> new_id: {new_id})")
                 
                 id_mapping[user['id']] = new_id
-                print(f"   ✅ User {user['tg_id']} imported (old_id: {user['id']} -> new_id: {new_id})")
                 
             except Exception as e:
                 print(f"   ❌ Failed to import user {user.get('tg_id', 'unknown')}: {e}")
         
-        print(f"✅ Imported {len(id_mapping)} users")
+        print(f"✅ Processed {len(id_mapping)} users")
         return id_mapping
     
     async def import_filters(self, filters_data: List[Dict[str, Any]], user_id_mapping: Dict[int, int]):
@@ -103,14 +147,40 @@ class DatabaseImporter:
                     print(f"   ⚠️  Skipping filter {filter_row['id']} - user not found")
                     continue
                 
+                # Check if filter already exists (optional - you can remove this if you want to allow duplicates)
+                existing_filter = await self.conn.fetchrow("""
+                    SELECT id FROM filters 
+                    WHERE user_id = $1 AND is_black_list = $2 AND is_and = $3 
+                    AND longer = $4 AND shorter = $5
+                """, new_user_id, filter_row['is_black_list'], filter_row['is_and'], 
+                     self._parse_interval_to_timedelta(str(filter_row.get('longer', ''))) if filter_row.get('longer') else None,
+                     self._parse_interval_to_timedelta(str(filter_row.get('shorter', ''))) if filter_row.get('shorter') else None)
+                
+                if existing_filter:
+                    print(f"   ⚠️  Filter {filter_row['id']} already exists, skipping")
+                    filter_id_mapping[filter_row['id']] = existing_filter['id']
+                    continue
+                
                 # Parse interval fields
                 longer = None
                 if filter_row.get('longer'):
-                    longer = filter_row['longer']
+                    try:
+                        # Parse PostgreSQL interval string to timedelta
+                        longer_str = str(filter_row['longer'])
+                        longer = self._parse_interval_to_timedelta(longer_str)
+                    except Exception as e:
+                        print(f"   ⚠️  Warning: Could not parse longer interval '{filter_row.get('longer')}': {e}")
+                        longer = None
                 
                 shorter = None
                 if filter_row.get('shorter'):
-                    shorter = filter_row['shorter']
+                    try:
+                        # Parse PostgreSQL interval string to timedelta
+                        shorter_str = str(filter_row['shorter'])
+                        shorter = self._parse_interval_to_timedelta(shorter_str)
+                    except Exception as e:
+                        print(f"   ⚠️  Warning: Could not parse shorter interval '{filter_row.get('shorter')}': {e}")
+                        shorter = None
                 
                 # Insert filter
                 new_id = await self.conn.fetchval("""

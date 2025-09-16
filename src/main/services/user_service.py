@@ -106,3 +106,44 @@ class UserService:
             return True
         return False
 
+    async def ensure_all_users_have_default_filters(self) -> None:
+        try:
+            all_users = await self.get_all_users()
+            
+            for user in all_users:
+                try:
+                    user_filters = await self.get_user_filters(user.id)
+                    filter_count = len(user_filters)
+                    
+                    if filter_count != 2:
+                        print(f"🔍 User {user.tg_id} (ID: {user.id}): Creating missing filters")
+                        filters_to_create = []
+                        
+                        has_blacklist = any(f.is_black_list for f in user_filters)
+                        if not has_blacklist:
+                            filters_to_create.append(FilterBase(
+                                user_id=user.id, 
+                                is_black_list=True, 
+                                is_and=True
+                            ))
+                        
+                        has_whitelist = any(not f.is_black_list for f in user_filters)
+                        if not has_whitelist:
+                            filters_to_create.append(FilterBase(
+                                user_id=user.id, 
+                                is_black_list=False, 
+                                is_and=True
+                            ))
+                        
+                        for filter_data in filters_to_create:
+                            await self.filter_dao.create_filter(filter_data)
+                            print(f"✅ User {user.tg_id} (ID: {user.id}): Created filter {filter_data.id}")
+                            
+                        print(f"✅ User {user.tg_id} (ID: {user.id}): Created {len(filters_to_create)} missing filters")
+                    
+                except Exception as e:
+                    print(f"❌ Error processing user {user.tg_id} (ID: {user.id}): {e}")
+
+        except Exception as e:
+            print(f"❌ Error in ensure_all_users_have_default_filters: {e}")
+        

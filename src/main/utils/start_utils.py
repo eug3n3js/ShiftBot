@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from src.main.utils.db_helper import DatabaseHelper
 from src.main.dao import UserDAO, FilterDAO
 from src.main.handlers import base_router, filter_router, admin_router
-from src.main.services import UserService, MessageService, ShiftService
+from src.main.services import UserService, MessageService, ShiftService, MuteService
 from src.main.clients import SeleniumClient
 
 bot_instance = None
@@ -98,10 +98,8 @@ class ServiceInitializer:
         UserService.initialize(user_dao, filter_dao)
         MessageService.initialize(user_dao)
         ShiftService.initialize(user_dao, filter_dao, selenium_client)
-        
-        # Initialize MuteService
-        from src.main.services.mute_service import MuteService
         MuteService.initialize(db_helper)
+
 
 
 def create_dispatcher() -> Dispatcher:
@@ -145,6 +143,9 @@ async def run_bot() -> None:
         
         shift_service = ShiftService.get_instance()
         shift_service_instance = shift_service
+
+        user_service = UserService.get_instance()
+        await user_service.ensure_all_users_have_default_filters()
         
         logging.info("Starting ShiftService...")
         await shift_service.run()
